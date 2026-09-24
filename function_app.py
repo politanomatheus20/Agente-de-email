@@ -1,4 +1,4 @@
-"""Azure Functions: dispara o ciclo de atendimento a cada 10 minutos."""
+"""Azure Functions: dispara o ciclo de atendimento a cada 30 minutos."""
 
 import logging
 
@@ -11,11 +11,11 @@ from omnis_support.logging_config import configure_logging
 app = func.FunctionApp()
 
 # Formato NCRONTAB: segundo minuto hora dia mês dia-da-semana
-EVERY_TEN_MINUTES = "0 */10 * * * *"
+EVERY_THIRTY_MINUTES = "0 */30 * * * *"
 
 
 @app.timer_trigger(
-    schedule=EVERY_TEN_MINUTES,
+    schedule=EVERY_THIRTY_MINUTES,
     arg_name="timer",
     run_on_startup=False,
     use_monitor=True,

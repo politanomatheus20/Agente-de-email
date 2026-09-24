@@ -1,13 +1,13 @@
 # Suporte Omnis
 
-Agente que lê a caixa **suporte@dataomnis.com.br** a cada 10 minutos, responde sozinho
+Agente que lê a caixa **suporte@dataomnis.com.br** a cada 30 minutos, responde sozinho
 as dúvidas simples e encaminha as complexas para a equipe. Todos os atendimentos ficam
 registrados em PostgreSQL, com as dúvidas interessantes marcadas para análise.
 
 ## Como funciona
 
 ```
-          a cada 10 min
+          a cada 30 min
 Outlook ─────────────────► Azure Function ──► Claude: triagem
 (suporte@)                        │
                                   ├─ simples + documentado ──► responde o cliente no mesmo email
@@ -41,7 +41,7 @@ Regras de segurança do atendimento:
 ## Estrutura
 
 ```
-function_app.py            gatilho do Azure Functions (a cada 10 minutos)
+function_app.py            gatilho do Azure Functions (a cada 30 minutos)
 omnis_support/
   app.py                   monta o agente com as dependências reais
   config.py                configuração via variáveis de ambiente

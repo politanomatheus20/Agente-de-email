@@ -129,7 +129,7 @@ if ($LASTEXITCODE -ne 0) { throw "Falha ao publicar o código." }
 Remove-Item $staging, $package -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
-Write-Host "Pronto! O agente roda a cada 10 minutos." -ForegroundColor Green
+Write-Host "Pronto! O agente roda a cada 30 minutos." -ForegroundColor Green
 if ($DryRun) {
     Write-Host "Modo SIMULAÇÃO ativo: nada é enviado. Acompanhe os logs e, quando estiver tudo certo:" -ForegroundColor Yellow
     Write-Host "  az functionapp config appsettings set -g $ResourceGroup -n $functionApp --settings DRY_RUN=false"

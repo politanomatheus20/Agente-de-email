@@ -7,7 +7,7 @@ Tudo está automatizado em scripts. O tempo total é de cerca de 30 minutos.
 
 | Recurso | Para que serve | Custo aproximado |
 |---|---|---|
-| Function App (Flex Consumption) | Executa o agente a cada 10 minutos | Poucos reais por mês |
+| Function App (Flex Consumption) | Executa o agente a cada 30 minutos | Poucos reais por mês |
 | PostgreSQL Flexible Server B1ms | Guarda os chamados | O maior custo; confira no portal |
 | Key Vault | Guarda as chaves e senhas | Centavos |
 | Storage Account | Exigido pelo Function App | Centavos |
@@ -73,13 +73,13 @@ Parâmetros opcionais:
 
 ## Passo 3: validar em modo simulação
 
-O agente sobe em **modo simulação**. Ele lê e classifica os emails dos últimos 15 minutos,
+O agente sobe em **modo simulação**. Ele lê e classifica os emails dos últimos 35 minutos,
 mas só registra nos
 logs o que faria. Cada ciclo de simulação chama o Claude, então não deixe esse modo
 ligado por dias.
 
 1. Envie alguns emails de teste para suporte@dataomnis.com.br.
-2. Espere até 10 minutos.
+2. Espere até 30 minutos.
 3. No portal do Azure, abra o Function App e vá em **Monitor** ou **Log stream**.
 4. Confira as classificações e decisões nos logs.
 

@@ -21,7 +21,8 @@ from omnis_support.services.support_agent import AgentSettings, RunReport, Suppo
 
 logger = logging.getLogger(__name__)
 
-DRY_RUN_LOOKBACK = timedelta(minutes=15)
+# Um pouco maior que o intervalo entre ciclos (30 min), para não pular nenhum email.
+DRY_RUN_LOOKBACK = timedelta(minutes=35)
 
 
 def run_cycle(settings: Settings) -> RunReport:
@@ -49,7 +50,7 @@ def run_cycle(settings: Settings) -> RunReport:
     if settings.dry_run:
         logger.warning("Modo SIMULAÇÃO: nada será enviado, marcado ou gravado no banco.")
         # Sem banco, a simulação não lembra dos ciclos anteriores. A janela curta
-        # evita reclassificar (e pagar de novo) os mesmos emails a cada 10 minutos.
+        # evita reclassificar (e pagar de novo) os mesmos emails a cada ciclo.
         agent = SupportAgent(
             DryRunMailGateway(mail),
             InMemoryTicketRepository(),
