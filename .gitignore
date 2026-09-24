@@ -1,0 +1,23 @@
+# Ambiente e segredos
+.env
+local.settings.json
+*.pem
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Azure / ferramentas
+.python_packages/
+bin/
+obj/
+*.zip
+.vscode/*
+!.vscode/extensions.json
