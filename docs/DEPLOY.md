@@ -67,7 +67,7 @@ Parâmetros opcionais:
 | `-ResourceGroup` | `rg-suporte-omnis` |
 | `-Location` | `brazilsouth` |
 | `-GraphTenantId` | tenant da assinatura do Azure |
-| `-EscalationRecipients` | Caio, Matheus e Thiago |
+| `-EscalationRecipients` | Matheus e Thiago |
 | `-DryRun` | `$true` |
 | `-CodeOnly` | publica só o código, sem mexer na infraestrutura |
 

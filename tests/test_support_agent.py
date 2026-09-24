@@ -27,7 +27,7 @@ from omnis_support.services.support_agent import (
 )
 from tests.factories import make_email, make_triage
 
-TEAM = ("caio.p@datagroup.global", "matheus.gavioli@datagroup.global")
+TEAM = ("matheus.gavioli@datagroup.global", "thiago.dourado@grupodata.com.br")
 
 
 @dataclass
@@ -197,7 +197,7 @@ def test_customer_follow_up_after_auto_reply_goes_to_team_without_new_ack() -> N
 @pytest.mark.parametrize(
     ("sender", "headers"),
     [
-        ("caio.p@datagroup.global", {}),
+        ("thiago.dourado@grupodata.com.br", {}),
         ("suporte@dataomnis.com.br", {}),
         ("no-reply@sistema.com", {}),
         ("cliente@empresa.com", {"auto-submitted": "auto-replied"}),

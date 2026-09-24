@@ -25,7 +25,7 @@ param(
     [string] $ResourceGroup = "rg-suporte-omnis",
     [string] $Location = "brazilsouth",
     [string] $Prefix = "omnissup",
-    [string] $EscalationRecipients = "caio.p@datagroup.global,matheus.gavioli@datagroup.global,thiago.dourado@grupodata.com.br",
+    [string] $EscalationRecipients = "matheus.gavioli@datagroup.global,thiago.dourado@grupodata.com.br",
     [bool] $DryRun = $true,
     [switch] $CodeOnly
 )
