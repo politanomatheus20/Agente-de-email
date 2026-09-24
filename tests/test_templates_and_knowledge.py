@@ -1,10 +1,14 @@
+from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from omnis_support.ai.knowledge import load_knowledge_base
 from omnis_support.ai.prompts import MAX_BODY_CHARS, render_email
 from omnis_support.config import Settings
 from omnis_support.db.migrate import pending_migrations
 from omnis_support.email import templates
+from omnis_support.email.filters import skip_reason
 from tests.factories import make_email, make_triage
 
 
@@ -55,3 +59,40 @@ def test_migrations_are_found_in_order() -> None:
     assert names == sorted(names)
     assert names[0] == "001_criar_tabela_chamados"
     assert pending_migrations(set(names)) == []
+
+
+def test_auto_reply_shows_brasilia_time() -> None:
+    email = make_email(received_at=datetime(2026, 9, 24, 15, 30, tzinfo=UTC))
+    html = templates.auto_reply_html("Olá!", "Equipe", email)
+    assert "24/09/2026 12:30" in html
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("Juliana Prado", "Juliana"), ("ana", "Ana"), ("joao@x.com", None), (None, None), ("", None)],
+)
+def test_first_name_of(name: str | None, expected: str | None) -> None:
+    assert templates.first_name_of(name) == expected
+
+
+def test_acknowledgement_uses_first_name() -> None:
+    html = templates.acknowledgement_html("Juliana Prado", "OMN-000003", "Equipe")
+    assert "Olá, Juliana!" in html
+
+
+def test_escalation_shows_interesting_without_reason_as_yes() -> None:
+    triage = make_triage(is_interesting=True, interesting_reason=None)
+    html = templates.escalation_intro_html("OMN-000001", make_email(), "motivo", triage)
+    assert ">Sim<" in html
+
+
+@pytest.mark.parametrize(
+    "subject", ["Resposta automática: Erro de login", "Automatic reply: Ajuda", "Out of Office"]
+)
+def test_auto_reply_subjects_are_ignored(subject: str) -> None:
+    assert skip_reason(make_email(subject=subject), set()) is not None
+
+
+def test_empty_process_since_from_azure_is_none() -> None:
+    settings = Settings(_env_file=None, process_since="")  # type: ignore[arg-type]
+    assert settings.process_since is None

@@ -9,6 +9,17 @@ from omnis_support.domain import IncomingEmail
 _AUTOMATED_SENDER_MARKERS = ("noreply", "no-reply", "donotreply", "mailer-daemon", "postmaster")
 _BULK_PRECEDENCE = frozenset({"bulk", "junk", "list", "auto_reply"})
 _AUTOREPLY_HEADERS = ("x-autoreply", "x-autorespond")
+_AUTOREPLY_SUBJECT_PREFIXES = (
+    "resposta automática",
+    "automatic reply",
+    "auto reply",
+    "autoreply",
+    "out of office",
+    "ausência temporária",
+    "fora do escritório",
+    "undeliverable",
+    "não é possível entregar",
+)
 
 
 def skip_reason(email: IncomingEmail, internal_addresses: Collection[str]) -> str | None:
@@ -29,4 +40,6 @@ def skip_reason(email: IncomingEmail, internal_addresses: Collection[str]) -> st
         return "email em massa (Precedence)"
     if any(name in headers for name in _AUTOREPLY_HEADERS):
         return "resposta automática"
+    if email.subject.strip().lower().startswith(_AUTOREPLY_SUBJECT_PREFIXES):
+        return "resposta automática (assunto)"
     return None

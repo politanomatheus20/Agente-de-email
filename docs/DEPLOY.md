@@ -73,8 +73,10 @@ Parâmetros opcionais:
 
 ## Passo 3: validar em modo simulação
 
-O agente sobe em **modo simulação**. Ele lê e classifica os emails, mas só registra nos
-logs o que faria.
+O agente sobe em **modo simulação**. Ele lê e classifica os emails dos últimos 15 minutos,
+mas só registra nos
+logs o que faria. Cada ciclo de simulação chama o Claude, então não deixe esse modo
+ligado por dias.
 
 1. Envie alguns emails de teste para suporte@dataomnis.com.br.
 2. Espere até 10 minutos.

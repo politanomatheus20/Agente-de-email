@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 from psycopg.rows import dict_row
@@ -10,6 +11,9 @@ from psycopg.rows import dict_row
 from omnis_support.domain import IncomingEmail, Ticket, TicketStatus, TriageResult
 
 _FINISHED_STATUSES = (TicketStatus.RESPONDIDO_AUTOMATICAMENTE, TicketStatus.ENCAMINHADO)
+# Um chamado "recebido" há mais tempo que isso foi interrompido no meio (ex.: queda
+# ou limite de tempo da função) e pode ser retomado.
+STALE_CLAIM_AFTER = timedelta(minutes=20)
 
 
 class PostgresTicketRepository:
@@ -20,7 +24,7 @@ class PostgresTicketRepository:
         """Registra o email para atendimento.
 
         Retorna None quando o email já foi atendido ou esgotou as tentativas.
-        Um email com erro anterior é liberado para nova tentativa.
+        Um email com erro anterior, ou interrompido no meio, é liberado para nova tentativa.
         """
         row = self._fetch_one(
             """
@@ -30,7 +34,9 @@ class PostgresTicketRepository:
                     %(sender_email)s, %(sender_name)s, %(subject)s, %(body)s, %(received_at)s)
             ON CONFLICT (graph_message_id) DO UPDATE
                SET attempts = tickets.attempts + 1, status = 'recebido', last_error = NULL
-             WHERE tickets.status = 'erro' AND tickets.attempts < %(max_attempts)s
+             WHERE tickets.attempts < %(max_attempts)s
+               AND (tickets.status = 'erro'
+                    OR (tickets.status = 'recebido' AND tickets.updated_at < now() - %(stale)s))
             RETURNING id, status, attempts
             """,
             {
@@ -43,6 +49,7 @@ class PostgresTicketRepository:
                 "body": email.body,
                 "received_at": email.received_at,
                 "max_attempts": max_attempts,
+                "stale": STALE_CLAIM_AFTER,
             },
         )
         return _to_ticket(row) if row else None
@@ -134,6 +141,7 @@ def _to_ticket(row: dict[str, object]) -> Ticket:
 class _StoredTicket:
     ticket: Ticket
     email: IncomingEmail
+    claimed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     triage: TriageResult | None = None
     decision_reason: str | None = None
     auto_reply: str | None = None
@@ -152,10 +160,16 @@ class InMemoryTicketRepository:
             ticket = Ticket(id=len(self.tickets) + 1, status=TicketStatus.RECEBIDO, attempts=1)
             self.tickets[email.message_id] = _StoredTicket(ticket, email)
             return ticket
-        if stored.ticket.status is TicketStatus.ERRO and stored.ticket.attempts < max_attempts:
+        stale = (
+            stored.ticket.status is TicketStatus.RECEBIDO
+            and datetime.now(UTC) - stored.claimed_at > STALE_CLAIM_AFTER
+        )
+        retryable = stored.ticket.status is TicketStatus.ERRO or stale
+        if retryable and stored.ticket.attempts < max_attempts:
             stored.ticket = replace(
                 stored.ticket, status=TicketStatus.RECEBIDO, attempts=stored.ticket.attempts + 1
             )
+            stored.claimed_at = datetime.now(UTC)
             return stored.ticket
         return None
 

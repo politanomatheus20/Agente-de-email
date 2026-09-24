@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -18,7 +18,6 @@ from omnis_support.domain import (
     TriageResult,
 )
 from omnis_support.services.support_agent import (
-    LABEL_ALREADY_HANDLED,
     LABEL_AUTO_REPLIED,
     LABEL_ESCALATED,
     LABEL_IGNORED,
@@ -37,9 +36,13 @@ class FakeMail:
     forwards: list[dict[str, object]] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
     fail_forward: bool = False
+    fail_label: bool = False
+    fetched_since: list[datetime] = field(default_factory=list)
 
-    def fetch_unread(self, limit: int, since: datetime | None = None) -> list[IncomingEmail]:
-        return [email for email in self.inbox if email.message_id not in self.labels][:limit]
+    def fetch_received_since(self, since: datetime, limit: int) -> list[IncomingEmail]:
+        # Como a Graph real: devolve tudo da janela, lido ou não.
+        self.fetched_since.append(since)
+        return self.inbox[:limit]
 
     def reply(self, message_id: str, html_body: str) -> None:
         self.replies.append((message_id, html_body))
@@ -65,6 +68,8 @@ class FakeMail:
         )
 
     def mark_processed(self, message_id: str, label: str) -> None:
+        if self.fail_label:
+            raise RuntimeError("Graph indisponível ao marcar")
         self.labels[message_id] = label
 
 
@@ -94,6 +99,9 @@ def build(
     *,
     send_ack: bool = True,
     max_attempts: int = 3,
+    max_per_run: int = 25,
+    clock: Callable[[], datetime] | None = None,
+    timer: Callable[[], float] | None = None,
 ) -> tuple[SupportAgent, InMemoryTicketRepository]:
     repository = repo or InMemoryTicketRepository()
     settings = AgentSettings(
@@ -101,11 +109,19 @@ def build(
         internal_addresses=frozenset({"suporte@dataomnis.com.br", *TEAM}),
         signature="Equipe de Suporte Omnis",
         min_confidence=0.8,
-        max_messages_per_run=25,
+        max_messages_per_run=max_per_run,
         max_attempts=max_attempts,
         send_acknowledgement=send_ack,
     )
-    return SupportAgent(mail, repository, assistant, settings), repository
+    agent = SupportAgent(
+        mail,
+        repository,
+        assistant,
+        settings,
+        clock=clock or (lambda: datetime.now(UTC)),
+        timer=timer or (lambda: 0.0),
+    )
+    return agent, repository
 
 
 def test_simple_question_gets_automatic_reply() -> None:
@@ -258,17 +274,108 @@ def test_last_failed_attempt_hands_email_to_team_without_ai() -> None:
     assert repo.by_id(1).ticket.status is TicketStatus.ENCAMINHADO
 
 
-def test_already_handled_email_is_only_marked_as_read() -> None:
+def test_already_handled_email_is_skipped_on_next_cycles() -> None:
+    mail = FakeMail(inbox=[make_email()])
+    agent, _ = build(mail, FakeAssistant())
+    agent.run_once()
+
+    report = agent.run_once()
+
+    assert report.already_handled == 1
+    assert report.processed == 0
+    assert len(mail.replies) == 1
+
+
+def test_email_already_opened_in_outlook_is_still_handled() -> None:
+    # Não existe filtro por "não lido": o email aberto por uma pessoa continua na janela.
+    mail = FakeMail(inbox=[make_email()], labels={"msg-1": "lido por uma pessoa"})
+    agent, _ = build(mail, FakeAssistant())
+
+    assert agent.run_once().auto_replied == 1
+
+
+def test_failure_to_label_does_not_cause_duplicate_reply() -> None:
+    mail = FakeMail(inbox=[make_email()], fail_label=True)
+    agent, repo = build(mail, FakeAssistant())
+
+    first = agent.run_once()
+    second = agent.run_once()
+
+    assert first.auto_replied == 1
+    assert second.already_handled == 1
+    assert len(mail.replies) == 1
+    assert repo.by_id(1).ticket.status is TicketStatus.RESPONDIDO_AUTOMATICAMENTE
+
+
+def test_interrupted_ticket_is_resumed_after_stale_period() -> None:
     repo = InMemoryTicketRepository()
     email = make_email()
-    ticket = repo.claim(email, max_attempts=3)
-    assert ticket is not None
-    repo.complete(ticket.id, TicketStatus.ENCAMINHADO, "já encaminhado")
+    assert repo.claim(email, max_attempts=3) is not None  # interrompido no meio
+    repo.tickets[email.message_id].claimed_at -= timedelta(minutes=30)
 
     mail = FakeMail(inbox=[email])
     agent, _ = build(mail, FakeAssistant(), repo)
     report = agent.run_once()
 
-    assert report.already_handled == 1
-    assert mail.labels["msg-1"] == LABEL_ALREADY_HANDLED
-    assert mail.replies == []
+    assert report.auto_replied == 1
+    assert repo.by_id(1).ticket.attempts == 2
+
+
+def test_recent_in_progress_ticket_is_not_taken_twice() -> None:
+    repo = InMemoryTicketRepository()
+    email = make_email()
+    assert repo.claim(email, max_attempts=3) is not None
+
+    assert repo.claim(email, max_attempts=3) is None
+
+
+def test_limit_per_cycle_counts_only_new_emails() -> None:
+    emails = [make_email(message_id=f"msg-{n}", conversation_id=f"c{n}") for n in range(4)]
+    mail = FakeMail(inbox=emails)
+    agent, _ = build(mail, FakeAssistant(), max_per_run=2)
+
+    first = agent.run_once()
+    second = agent.run_once()
+
+    assert (first.auto_replied, second.auto_replied) == (2, 2)
+    assert second.already_handled == 2
+
+
+def test_time_budget_stops_taking_new_emails() -> None:
+    emails = [make_email(message_id=f"msg-{n}", conversation_id=f"c{n}") for n in range(3)]
+    ticks = iter([0.0, 0.0, 400.0, 400.0])
+    mail = FakeMail(inbox=emails)
+    agent, _ = build(mail, FakeAssistant(), timer=lambda: next(ticks))
+
+    report = agent.run_once()
+
+    assert report.auto_replied == 1
+
+
+def test_search_window_respects_lookback_and_process_since() -> None:
+    now = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+    mail = FakeMail()
+    agent, _ = build(mail, FakeAssistant(), clock=lambda: now)
+    agent.run_once()
+    assert mail.fetched_since[-1] == now - timedelta(hours=24)
+
+    since = datetime(2026, 9, 25, 8, 0)  # sem fuso: tratado como UTC
+    settings = replace(agent._settings, process_since=since)
+    SupportAgent(
+        mail, InMemoryTicketRepository(), FakeAssistant(), settings, clock=lambda: now
+    ).run_once()
+    assert mail.fetched_since[-1] == since.replace(tzinfo=UTC)
+
+
+def test_customer_out_of_office_in_same_conversation_is_ignored() -> None:
+    mail = FakeMail(inbox=[make_email()])
+    assistant = FakeAssistant()
+    agent, _ = build(mail, assistant)
+    agent.run_once()
+
+    assistant.triage_result = make_triage(category=Category.NAO_SUPORTE, confidence=0.95)
+    mail.inbox.append(make_email(message_id="msg-2", body="Estou de férias até dia 30."))
+    report = agent.run_once()
+
+    assert report.ignored == 1
+    assert mail.forwards == []

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -43,14 +43,13 @@ def test_fetch_unread_parses_messages_and_builds_query() -> None:
             },
         )
 
-    emails = make_client(handler).fetch_unread(10, datetime(2026, 9, 1, tzinfo=UTC))
+    emails = make_client(handler).fetch_received_since(datetime(2026, 9, 1, tzinfo=UTC), 10)
 
     request = captured[0]
     assert request.headers["Authorization"] == "Bearer token-teste"
     assert "outlook.body-content-type" in request.headers["Prefer"]
-    assert request.url.params["$filter"] == (
-        "receivedDateTime ge 2026-09-01T00:00:00Z and isRead eq false"
-    )
+    assert request.url.params["$filter"] == "receivedDateTime ge 2026-09-01T00:00:00Z"
+    assert 'IdType="ImmutableId"' in request.headers["Prefer"]
     assert request.url.params["$top"] == "10"
     email = emails[0]
     assert email.sender_email == "cliente@empresa.com"
@@ -95,3 +94,45 @@ def test_raises_on_client_error() -> None:
     client = make_client(lambda _: httpx.Response(403, text="Access denied"))
     with pytest.raises(GraphApiError, match="403"):
         client.reply("msg-1", "<p>oi</p>")
+
+
+def test_fetch_follows_pagination_and_converts_timezone() -> None:
+    calls: list[httpx.Request] = []
+    item = {
+        "id": "x",
+        "subject": "s",
+        "from": {"emailAddress": {"address": "a@b.com"}},
+        "receivedDateTime": "2026-09-24T10:00:00Z",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            next_link = f"{GRAPH_BASE_URL}/users/x/mailFolders/inbox/messages?$skip=1"
+            return httpx.Response(200, json={"value": [item], "@odata.nextLink": next_link})
+        return httpx.Response(200, json={"value": [{**item, "id": "y"}]})
+
+    brasilia = timezone(timedelta(hours=-3))
+    since = datetime(2026, 9, 24, 9, 0, tzinfo=brasilia)
+    emails = make_client(handler).fetch_received_since(since, 10)
+
+    assert [email.message_id for email in emails] == ["x", "y"]
+    assert calls[0].url.params["$filter"] == "receivedDateTime ge 2026-09-24T12:00:00Z"
+    assert calls[1].url.params["$skip"] == "1"
+
+
+def test_failed_forward_discards_draft() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.url.path.endswith("/createForward"):
+            return httpx.Response(201, json={"id": "draft-1", "body": {"content": ""}})
+        if request.method == "PATCH":
+            return httpx.Response(400, text="bad request")
+        return httpx.Response(204)
+
+    with pytest.raises(GraphApiError):
+        make_client(handler).forward("msg-1", ["e@x.com"], "s", "<p>i</p>", "c@y.com")
+
+    assert methods == ["POST", "PATCH", "DELETE"]

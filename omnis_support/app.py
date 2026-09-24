@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
+from datetime import timedelta
 
 import anthropic
 import psycopg
@@ -19,6 +21,8 @@ from omnis_support.services.support_agent import AgentSettings, RunReport, Suppo
 
 logger = logging.getLogger(__name__)
 
+DRY_RUN_LOOKBACK = timedelta(minutes=15)
+
 
 def run_cycle(settings: Settings) -> RunReport:
     """Executa um ciclo completo de leitura e atendimento da caixa de suporte."""
@@ -33,7 +37,10 @@ def run_cycle(settings: Settings) -> RunReport:
         ),
     )
     assistant = ClaudeSupportAssistant(
-        client=anthropic.Anthropic(api_key=settings.anthropic_api_key.get_secret_value()),
+        # Limite por chamada bem abaixo do tempo máximo de execução da função.
+        client=anthropic.Anthropic(
+            api_key=settings.anthropic_api_key.get_secret_value(), timeout=120.0, max_retries=2
+        ),
         model=settings.claude_model,
         knowledge_base=load_knowledge_base(settings.knowledge_dir),
     )
@@ -41,12 +48,19 @@ def run_cycle(settings: Settings) -> RunReport:
 
     if settings.dry_run:
         logger.warning("Modo SIMULAÇÃO: nada será enviado, marcado ou gravado no banco.")
+        # Sem banco, a simulação não lembra dos ciclos anteriores. A janela curta
+        # evita reclassificar (e pagar de novo) os mesmos emails a cada 10 minutos.
         agent = SupportAgent(
-            DryRunMailGateway(mail), InMemoryTicketRepository(), assistant, agent_settings
+            DryRunMailGateway(mail),
+            InMemoryTicketRepository(),
+            assistant,
+            replace(agent_settings, lookback=DRY_RUN_LOOKBACK),
         )
         return agent.run_once()
 
-    with psycopg.connect(settings.database_url.get_secret_value(), autocommit=True) as conn:
+    with psycopg.connect(
+        settings.database_url.get_secret_value(), autocommit=True, connect_timeout=15
+    ) as conn:
         applied = apply_migrations(conn)
         if applied:
             logger.info("Migrações aplicadas: %s", ", ".join(applied))
@@ -65,4 +79,5 @@ def _agent_settings(settings: Settings) -> AgentSettings:
         max_attempts=settings.max_attempts,
         send_acknowledgement=settings.send_acknowledgement,
         process_since=settings.process_since,
+        lookback=timedelta(hours=settings.lookback_hours),
     )

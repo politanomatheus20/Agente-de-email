@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from html import escape
+from zoneinfo import ZoneInfo
 
 from omnis_support.domain import IncomingEmail, TriageResult
+
+LOCAL_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 _FONT = "font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2933;line-height:1.5"
 _MUTED = "color:#61707d;font-size:12px"
@@ -16,8 +19,22 @@ def text_to_html(text: str) -> str:
     return "".join(f"<p>{escape(p).replace(chr(10), '<br>')}</p>" for p in paragraphs)
 
 
+def first_name_of(name: str | None) -> str | None:
+    """Primeiro nome para a saudação; None se o nome não parecer um nome de pessoa."""
+    if not name or "@" in name:
+        return None
+    first = name.strip().split()[0] if name.strip() else ""
+    return first.capitalize() if first.isalpha() else None
+
+
+def _interest_label(triage: TriageResult) -> str:
+    if not triage.is_interesting:
+        return "Não"
+    return f"Sim. {triage.interesting_reason}" if triage.interesting_reason else "Sim"
+
+
 def auto_reply_html(reply_text: str, signature: str, original: IncomingEmail) -> str:
-    sent_at = original.received_at.strftime("%d/%m/%Y %H:%M")
+    sent_at = original.received_at.astimezone(LOCAL_TIMEZONE).strftime("%d/%m/%Y %H:%M")
     author = escape(original.sender_name or original.sender_email)
     return (
         f'<div style="{_FONT}">'
@@ -32,7 +49,8 @@ def auto_reply_html(reply_text: str, signature: str, original: IncomingEmail) ->
 
 
 def acknowledgement_html(customer_name: str | None, ticket_number: str, signature: str) -> str:
-    greeting = f"Olá, {escape(customer_name)}!" if customer_name else "Olá!"
+    first_name = first_name_of(customer_name)
+    greeting = f"Olá, {escape(first_name)}!" if first_name else "Olá!"
     return (
         f'<div style="{_FONT}">'
         f"<p>{greeting}</p>"
@@ -64,7 +82,7 @@ def escalation_intro_html(
         rows += [
             ("Categoria", triage.category.value),
             ("Resumo", triage.summary),
-            ("Dúvida interessante", triage.interesting_reason or "Não"),
+            ("Dúvida interessante", _interest_label(triage)),
         ]
     table_rows = "".join(
         f'<tr><td style="padding:4px 12px 4px 0;{_MUTED};white-space:nowrap">{escape(label)}</td>'

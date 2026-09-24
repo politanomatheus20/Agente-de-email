@@ -75,3 +75,9 @@ def test_interest_rules_keep_model_reason() -> None:
 def test_interest_rules_do_not_touch_other_categories() -> None:
     triage = make_triage(category=Category.LOGIN, is_interesting=False)
     assert apply_interest_rules(triage) is triage
+
+
+def test_confident_non_support_is_ignored_even_in_existing_conversation() -> None:
+    previous = Ticket(id=7, status=TicketStatus.ENCAMINHADO, attempts=1)
+    triage = make_triage(category=Category.NAO_SUPORTE, confidence=0.95)
+    assert decide(triage, previous, MIN_CONFIDENCE).action is Action.IGNORE

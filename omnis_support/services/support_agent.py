@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence
+import time
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from omnis_support.domain import IncomingEmail, Ticket, TicketStatus, TriageResult
 from omnis_support.email import templates
@@ -18,8 +19,10 @@ logger = logging.getLogger(__name__)
 LABEL_AUTO_REPLIED = "Agente Omnis: respondido"
 LABEL_ESCALATED = "Agente Omnis: encaminhado"
 LABEL_IGNORED = "Agente Omnis: ignorado"
-LABEL_ALREADY_HANDLED = "Agente Omnis: processado"
 LABEL_ERROR = "Agente Omnis: erro"
+
+# Quantos emails da janela de busca são lidos por ciclo (os já atendidos são pulados).
+_SCAN_LIMIT = 250
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +35,10 @@ class AgentSettings:
     max_attempts: int
     send_acknowledgement: bool
     process_since: datetime | None = None
+    lookback: timedelta = timedelta(hours=24)
+    # Para de pegar emails novos antes do limite de execução do Azure Functions,
+    # evitando que um email fique pela metade.
+    time_budget_seconds: float = 360.0
 
 
 @dataclass
@@ -42,6 +49,10 @@ class RunReport:
     ignored: int = 0
     already_handled: int = 0
     failed: int = 0
+
+    @property
+    def processed(self) -> int:
+        return self.auto_replied + self.escalated + self.ignored + self.failed
 
     def register(self, status: TicketStatus) -> None:
         if status is TicketStatus.RESPONDIDO_AUTOMATICAMENTE:
@@ -59,19 +70,29 @@ class SupportAgent:
         tickets: TicketRepository,
         assistant: SupportAssistant,
         settings: AgentSettings,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        timer: Callable[[], float] = time.monotonic,
     ) -> None:
         self._mail = mail
         self._tickets = tickets
         self._assistant = assistant
         self._settings = settings
+        self._clock = clock
+        self._timer = timer
 
     def run_once(self) -> RunReport:
         report = RunReport()
-        emails = self._mail.fetch_unread(
-            self._settings.max_messages_per_run, self._settings.process_since
-        )
+        started = self._timer()
+        emails = self._mail.fetch_received_since(self._window_start(), _SCAN_LIMIT)
         report.fetched = len(emails)
         for email in emails:
+            if report.processed >= self._settings.max_messages_per_run:
+                logger.info("Limite de emails por ciclo atingido; o restante fica para o próximo.")
+                break
+            if self._timer() - started > self._settings.time_budget_seconds:
+                logger.warning("Tempo do ciclo esgotado; o restante fica para o próximo.")
+                break
             try:
                 self._process_safely(email, report)
             except Exception:
@@ -81,13 +102,20 @@ class SupportAgent:
         logger.info("Ciclo concluído: %s", report)
         return report
 
+    def _window_start(self) -> datetime:
+        start = self._clock() - self._settings.lookback
+        since = self._settings.process_since
+        if since is not None:
+            since = since if since.tzinfo else since.replace(tzinfo=UTC)
+            start = max(start, since)
+        return start
+
     # ------------------------------------------------------------------ fluxo
 
     def _process_safely(self, email: IncomingEmail, report: RunReport) -> None:
         ticket = self._tickets.claim(email, self._settings.max_attempts)
         if ticket is None:
-            # Já atendido antes, mas ainda aparecia como não lido.
-            self._mail.mark_processed(email.message_id, LABEL_ALREADY_HANDLED)
+            # Já atendido em um ciclo anterior.
             report.already_handled += 1
             return
 
@@ -139,7 +167,7 @@ class SupportAgent:
         self._tickets.complete(
             ticket.id, TicketStatus.RESPONDIDO_AUTOMATICAMENTE, reason, auto_reply=reply_text
         )
-        self._mail.mark_processed(email.message_id, LABEL_AUTO_REPLIED)
+        self._label(email, LABEL_AUTO_REPLIED)
         return TicketStatus.RESPONDIDO_AUTOMATICAMENTE
 
     def _escalate(
@@ -161,7 +189,7 @@ class SupportAgent:
         if acknowledge and self._settings.send_acknowledgement:
             self._send_acknowledgement(email, ticket)
         self._tickets.complete(ticket.id, TicketStatus.ENCAMINHADO, reason)
-        self._mail.mark_processed(email.message_id, LABEL_ESCALATED)
+        self._label(email, LABEL_ESCALATED)
         return TicketStatus.ENCAMINHADO
 
     def _send_acknowledgement(self, email: IncomingEmail, ticket: Ticket) -> None:
@@ -179,8 +207,15 @@ class SupportAgent:
     def _ignore(self, email: IncomingEmail, ticket: Ticket, reason: str) -> TicketStatus:
         logger.info("Chamado %s ignorado: %s", ticket.number, reason)
         self._tickets.complete(ticket.id, TicketStatus.IGNORADO, reason)
-        self._mail.mark_processed(email.message_id, LABEL_IGNORED)
+        self._label(email, LABEL_IGNORED)
         return TicketStatus.IGNORADO
+
+    def _label(self, email: IncomingEmail, label: str) -> None:
+        """Marca o email no Outlook. É só informativo: falhar aqui não refaz o atendimento."""
+        try:
+            self._mail.mark_processed(email.message_id, label)
+        except Exception:
+            logger.warning("Não foi possível marcar o email %s no Outlook", email.message_id)
 
     def _give_up(self, email: IncomingEmail, ticket: Ticket, error: Exception) -> None:
         """Última tentativa esgotada: entrega o email à equipe sem passar pela IA."""
@@ -192,7 +227,4 @@ class SupportAgent:
             self._escalate(email, ticket, reason, triage=None, acknowledge=False)
         except Exception:
             logger.exception("Não foi possível encaminhar o chamado %s à equipe", ticket.number)
-            try:
-                self._mail.mark_processed(email.message_id, LABEL_ERROR)
-            except Exception:
-                logger.exception("Não foi possível marcar o email do chamado %s", ticket.number)
+            self._label(email, LABEL_ERROR)

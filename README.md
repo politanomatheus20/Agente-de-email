@@ -33,6 +33,8 @@ Regras de segurança do atendimento:
 - **O agente nunca envia nem redefine senhas.** Ele só orienta o processo de recuperação.
 - **Nenhum email se perde.** Falhas são tentadas de novo até 3 vezes. Depois disso, o
   email vai para a equipe sem passar pela IA.
+- **Emails abertos por alguém no Outlook também são atendidos.** O agente olha tudo que
+  chegou nas últimas 24 horas e usa o banco para nunca atender o mesmo email duas vezes.
 - **Cada email recebe uma categoria no Outlook**, como "Agente Omnis: respondido", para
   a equipe ver o que foi feito.
 

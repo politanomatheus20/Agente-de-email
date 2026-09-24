@@ -16,8 +16,8 @@ class DryRunMailGateway:
     def __init__(self, inner: MailGateway) -> None:
         self._inner = inner
 
-    def fetch_unread(self, limit: int, since: datetime | None = None) -> list[IncomingEmail]:
-        return self._inner.fetch_unread(limit, since)
+    def fetch_received_since(self, since: datetime, limit: int) -> list[IncomingEmail]:
+        return self._inner.fetch_received_since(since, limit)
 
     def reply(self, message_id: str, html_body: str) -> None:
         logger.info("[SIMULAÇÃO] Responderia ao email %s:\n%s", message_id, html_body)

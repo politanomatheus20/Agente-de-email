@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -20,6 +20,9 @@ GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _MAX_RETRIES = 3
+_PAGE_SIZE = 50
+# IDs imutáveis não mudam quando alguém move o email de pasta no Outlook.
+_IMMUTABLE_IDS = 'IdType="ImmutableId"'
 _MESSAGE_FIELDS = (
     "id,conversationId,internetMessageId,subject,from,body,receivedDateTime,internetMessageHeaders"
 )
@@ -64,22 +67,32 @@ class GraphMailClient:
 
     # ------------------------------------------------------------------ leitura
 
-    def fetch_unread(self, limit: int, since: datetime | None = None) -> list[IncomingEmail]:
-        """Retorna os emails não lidos da caixa de entrada, do mais antigo ao mais novo."""
-        since_iso = (since or datetime(2000, 1, 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        response = self._request(
-            "GET",
-            f"{self._mailbox_path}/mailFolders/inbox/messages",
-            params={
-                # A Graph exige que o campo do $orderby apareça primeiro no $filter.
-                "$filter": f"receivedDateTime ge {since_iso} and isRead eq false",
-                "$orderby": "receivedDateTime asc",
-                "$top": str(limit),
-                "$select": _MESSAGE_FIELDS,
-            },
-            headers={"Prefer": 'outlook.body-content-type="text"'},
-        )
-        return [_parse_message(item) for item in response.json().get("value", [])]
+    def fetch_received_since(self, since: datetime, limit: int) -> list[IncomingEmail]:
+        """Retorna os emails da caixa de entrada recebidos a partir de `since`, lidos ou não.
+
+        Não depende do status "lido": um email aberto por alguém no Outlook antes
+        do agente rodar continua sendo atendido. O banco evita atendimentos duplicados.
+        """
+        path: str | None = f"{self._mailbox_path}/mailFolders/inbox/messages"
+        params: dict[str, str] | None = {
+            # A Graph exige que o campo do $orderby apareça no $filter.
+            "$filter": f"receivedDateTime ge {_to_graph_datetime(since)}",
+            "$orderby": "receivedDateTime asc",
+            "$top": str(min(_PAGE_SIZE, limit)),
+            "$select": _MESSAGE_FIELDS,
+        }
+        emails: list[IncomingEmail] = []
+        while path and len(emails) < limit:
+            page = self._request(
+                "GET",
+                path,
+                params=params,
+                headers={"Prefer": f'outlook.body-content-type="text", {_IMMUTABLE_IDS}'},
+            ).json()
+            emails.extend(_parse_message(item) for item in page.get("value", []))
+            # O nextLink já traz todos os parâmetros da consulta.
+            path, params = page.get("@odata.nextLink"), None
+        return emails[:limit]
 
     # ------------------------------------------------------------------ escrita
 
@@ -108,34 +121,25 @@ class GraphMailClient:
             f"{self._message_path(message_id)}/createForward",
             json={"message": {"toRecipients": _recipients(recipients)}},
         ).json()
+        draft_path = self._message_path(draft["id"])
         original_html = (draft.get("body") or {}).get("content", "")
-        self._request(
-            "PATCH",
-            self._message_path(draft["id"]),
-            json={
-                "subject": subject,
-                "replyTo": _recipients([reply_to]),
-                "body": {
-                    "contentType": "HTML",
-                    "content": _prepend_html(intro_html, original_html),
-                },
-            },
-        )
-        self._request("POST", f"{self._message_path(draft['id'])}/send")
-
-    def send(self, to: Iterable[str], subject: str, html_body: str) -> None:
-        self._request(
-            "POST",
-            f"{self._mailbox_path}/sendMail",
-            json={
-                "message": {
+        try:
+            self._request(
+                "PATCH",
+                draft_path,
+                json={
                     "subject": subject,
-                    "body": {"contentType": "HTML", "content": html_body},
-                    "toRecipients": _recipients(to),
+                    "replyTo": _recipients([reply_to]),
+                    "body": {
+                        "contentType": "HTML",
+                        "content": _prepend_html(intro_html, original_html),
+                    },
                 },
-                "saveToSentItems": True,
-            },
-        )
+            )
+            self._request("POST", f"{draft_path}/send")
+        except GraphApiError:
+            self._discard_draft(draft_path)
+            raise
 
     def mark_processed(self, message_id: str, label: str) -> None:
         """Marca como lido e aplica uma categoria visível no Outlook."""
@@ -146,6 +150,13 @@ class GraphMailClient:
         )
 
     # ------------------------------------------------------------------ interno
+
+    def _discard_draft(self, draft_path: str) -> None:
+        """Remove o rascunho de um encaminhamento que falhou, para não acumular lixo."""
+        try:
+            self._request("DELETE", draft_path)
+        except GraphApiError:
+            logger.warning("Não foi possível remover o rascunho %s", draft_path)
 
     @property
     def _mailbox_path(self) -> str:
@@ -169,7 +180,11 @@ class GraphMailClient:
                 path,
                 params=params,
                 json=json,
-                headers={"Authorization": f"Bearer {self._token_provider()}", **(headers or {})},
+                headers={
+                    "Authorization": f"Bearer {self._token_provider()}",
+                    "Prefer": _IMMUTABLE_IDS,
+                    **(headers or {}),
+                },
             )
             if response.status_code not in _RETRYABLE_STATUS or attempt == _MAX_RETRIES:
                 break
@@ -204,6 +219,12 @@ def _parse_message(item: dict[str, Any]) -> IncomingEmail:
         received_at=datetime.fromisoformat(item["receivedDateTime"]),
         headers=headers,
     )
+
+
+def _to_graph_datetime(value: datetime) -> str:
+    """Formata em UTC. Datas sem fuso são tratadas como UTC."""
+    utc = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _recipients(addresses: Iterable[str]) -> list[dict[str, dict[str, str]]]:

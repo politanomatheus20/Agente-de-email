@@ -52,8 +52,13 @@ if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Entrando no Azure..." -ForegroundColor Cyan
-az account show --only-show-errors 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) { az login --only-show-errors | Out-Null }
+# No Windows PowerShell 5.1, redirecionar o stderr de um programa com
+# ErrorActionPreference=Stop interrompe o script. Por isso o "Continue" temporário.
+$ErrorActionPreference = "Continue"
+az account show --output none 2>$null
+$loggedIn = $LASTEXITCODE -eq 0
+$ErrorActionPreference = "Stop"
+if (-not $loggedIn) { az login --only-show-errors | Out-Null }
 az account set --subscription $SubscriptionId
 
 if (-not $CodeOnly) {
@@ -110,7 +115,10 @@ foreach ($item in @("function_app.py", "host.json", "requirements.txt", "omnis_s
     Copy-Item -Path (Join-Path $root $item) -Destination $staging -Recurse
 }
 Get-ChildItem $staging -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $package
+# O Compress-Archive do Windows PowerShell 5.1 grava caminhos com "\", que o Linux
+# do Azure não entende. O tar.exe do Windows 10/11 gera um zip compatível.
+tar.exe -a -c -f $package -C $staging function_app.py host.json requirements.txt omnis_support knowledge
+if ($LASTEXITCODE -ne 0) { throw "Falha ao empacotar o código." }
 
 Write-Host "Publicando no Function App $functionApp..." -ForegroundColor Cyan
 az functionapp deployment source config-zip `

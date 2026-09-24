@@ -43,15 +43,18 @@ def decide(
     previous_ticket: Ticket | None,
     min_confidence: float,
 ) -> Decision:
+    confident = triage.confidence >= min_confidence
+
+    # Vem antes da continuação: respostas automáticas do cliente (ex.: "estou de
+    # férias") chegam no mesmo fio e não devem incomodar a equipe.
+    if triage.category is Category.NAO_SUPORTE and confident:
+        return Decision(Action.IGNORE, "Não é uma solicitação de suporte")
+
     if previous_ticket is not None:
         # O cliente voltou a escrever: uma pessoa deve continuar o atendimento.
         return Decision(Action.ESCALATE, f"Continuação do chamado {previous_ticket.number}")
 
-    confident = triage.confidence >= min_confidence
-
     if triage.category is Category.NAO_SUPORTE:
-        if confident:
-            return Decision(Action.IGNORE, "Não é uma solicitação de suporte")
         return Decision(Action.ESCALATE, "Possível mensagem fora do suporte, com baixa confiança")
 
     if triage.category not in AUTO_ANSWERABLE_CATEGORIES:

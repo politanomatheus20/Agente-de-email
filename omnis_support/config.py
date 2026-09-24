@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     send_acknowledgement: bool = True
     signature: str = "Equipe de Suporte Omnis"
     process_since: datetime | None = None
+    lookback_hours: int = Field(default=24, ge=1, le=24 * 7)
     knowledge_dir: Path = PROJECT_ROOT / "knowledge"
     log_level: str = "INFO"
 
@@ -51,6 +52,12 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip().lower() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("process_since", mode="before")
+    @classmethod
+    def _empty_as_none(cls, value: object) -> object:
+        # No Azure, uma configuração não preenchida chega como texto vazio.
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("knowledge_dir", mode="after")
     @classmethod
